@@ -1,4 +1,4 @@
-# components/admin_views.py - 管理端视图组件
+# components/admin_views.py - 管理端视图组件（优化版）
 
 import streamlit as st
 import pandas as pd
@@ -6,10 +6,7 @@ from io import BytesIO
 
 
 def render_time_selector(key_prefix: str = "") -> tuple:
-    """
-    渲染时间选择器
-    返回: (start_date, end_date)
-    """
+    """渲染时间选择器，返回: (start_date, end_date)"""
     from services.stats_service import get_date_range
 
     col1, col2, col3 = st.columns([1, 1, 1])
@@ -156,12 +153,14 @@ def render_request_list_simple(requests: list):
 
     for req in requests:
         status_display = get_status_display(req['status'])
-        with st.expander(f"**{req['title']}** - {status_display}"):
+        confidential_badge = "🔒 " if req.get('is_confidential') else ""
+
+        with st.expander(f"{confidential_badge}**{req['title']}** - {status_display}"):
             col1, col2 = st.columns(2)
             with col1:
                 st.write(f"**需求类型:** {req.get('request_type') or '-'}")
                 st.write(f"**研究范畴:** {req.get('research_scope') or '-'}")
-                st.write(f"**工时:** {req.get('work_hours', 0)}H")
+                st.write(f"**工时:** {req.get('work_hours', 0):.1f}H")
             with col2:
                 st.write(f"**销售:** {req.get('sales_name', '-')}")
                 st.write(f"**研究员:** {req.get('researcher_name', '-')}")
@@ -173,21 +172,204 @@ def render_request_list_simple(requests: list):
                 st.write(f"**处理结果:** {req['result_note']}")
 
 
+# ============================================================
+# 优化后的多时间维度表格
+# ============================================================
+
+def render_multi_period_researcher_table(data: list):
+    """
+    渲染研究员多时间维度统计表格（优化版）
+    - 过滤空数据行
+    - 总计行固定在底部，不参与排序
+    - 数值格式统一为一位小数
+    """
+    if not data:
+        st.info("暂无数据")
+        return
+
+    df = pd.DataFrame(data)
+
+    # 过滤掉所有列都为0的行（空白研究员）
+    numeric_cols = ['today_count', 'today_hours', 'week_count', 'week_hours',
+                    'month_count', 'month_hours', 'quarter_hours', 'year_hours']
+    df = df[df[numeric_cols].sum(axis=1) > 0]
+
+    if df.empty:
+        st.info("暂无数据")
+        return
+
+    # 重命名列
+    df = df.rename(columns={
+        'researcher_name': '研究员',
+        'today_count': '今日需求',
+        'today_hours': '今日工时',
+        'week_count': '本周需求',
+        'week_hours': '本周工时',
+        'month_count': '当月需求',
+        'month_hours': '当月工时',
+        'quarter_hours': '当季工时',
+        'year_hours': '今年工时'
+    })
+
+    # 格式化为一位小数
+    for col in ['今日工时', '本周工时', '当月工时', '当季工时', '今年工时']:
+        if col in df.columns:
+            df[col] = df[col].apply(lambda x: f"{x:.1f}")
+
+    display_cols = ['研究员', '今日需求', '今日工时', '本周需求', '本周工时',
+                    '当月需求', '当月工时', '当季工时', '今年工时']
+
+    # 计算总计（数值类型用于计算）
+    numeric_df = pd.DataFrame(data)
+    numeric_df = numeric_df[numeric_df[numeric_cols].sum(axis=1) > 0]
+
+    totals = {
+        '研究员': '📊 总计',
+        '今日需求': int(numeric_df['today_count'].sum()),
+        '今日工时': f"{numeric_df['today_hours'].sum():.1f}",
+        '本周需求': int(numeric_df['week_count'].sum()),
+        '本周工时': f"{numeric_df['week_hours'].sum():.1f}",
+        '当月需求': int(numeric_df['month_count'].sum()),
+        '当月工时': f"{numeric_df['month_hours'].sum():.1f}",
+        '当季工时': f"{numeric_df['quarter_hours'].sum():.1f}",
+        '今年工时': f"{numeric_df['year_hours'].sum():.1f}"
+    }
+
+    # 数据行
+    df_data = df[display_cols].copy()
+
+    # 总计行
+    df_total = pd.DataFrame([totals])
+
+    # 分别显示数据和总计
+    st.dataframe(
+        df_data,
+        use_container_width=True,
+        hide_index=True,
+        height=min(400, len(df_data) * 35 + 38)
+    )
+
+    # 总计行用不同样式
+    st.markdown("""
+        <style>
+        .total-row {
+            background-color: #f0f2f6;
+            font-weight: bold;
+            padding: 8px;
+            border-radius: 4px;
+            margin-top: -10px;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    st.dataframe(
+        df_total,
+        use_container_width=True,
+        hide_index=True,
+        column_config={col: st.column_config.Column(width="medium") for col in display_cols}
+    )
+
+
+def render_multi_period_request_type_table(data: list):
+    """
+    渲染需求类型多时间维度统计表格（优化版）
+    - 过滤空数据行
+    - 总计行固定在底部，不参与排序
+    - 数值格式统一为一位小数
+    """
+    if not data:
+        st.info("暂无数据")
+        return
+
+    df = pd.DataFrame(data)
+
+    # 过滤掉所有列都为0的行
+    numeric_cols = ['today_count', 'today_hours', 'week_count', 'week_hours',
+                    'month_count', 'month_hours', 'quarter_hours', 'year_hours']
+    df = df[df[numeric_cols].sum(axis=1) > 0]
+
+    if df.empty:
+        st.info("暂无数据")
+        return
+
+    # 重命名列
+    df = df.rename(columns={
+        'request_type': '需求类型',
+        'today_count': '今日需求',
+        'today_hours': '今日工时',
+        'week_count': '本周需求',
+        'week_hours': '本周工时',
+        'month_count': '当月需求',
+        'month_hours': '当月工时',
+        'quarter_hours': '当季工时',
+        'year_hours': '今年工时'
+    })
+
+    # 格式化为一位小数
+    for col in ['今日工时', '本周工时', '当月工时', '当季工时', '今年工时']:
+        if col in df.columns:
+            df[col] = df[col].apply(lambda x: f"{x:.1f}")
+
+    display_cols = ['需求类型', '今日需求', '今日工时', '本周需求', '本周工时',
+                    '当月需求', '当月工时', '当季工时', '今年工时']
+
+    # 计算总计
+    numeric_df = pd.DataFrame(data)
+    numeric_df = numeric_df[numeric_df[numeric_cols].sum(axis=1) > 0]
+
+    totals = {
+        '需求类型': '📊 总计',
+        '今日需求': int(numeric_df['today_count'].sum()),
+        '今日工时': f"{numeric_df['today_hours'].sum():.1f}",
+        '本周需求': int(numeric_df['week_count'].sum()),
+        '本周工时': f"{numeric_df['week_hours'].sum():.1f}",
+        '当月需求': int(numeric_df['month_count'].sum()),
+        '当月工时': f"{numeric_df['month_hours'].sum():.1f}",
+        '当季工时': f"{numeric_df['quarter_hours'].sum():.1f}",
+        '今年工时': f"{numeric_df['year_hours'].sum():.1f}"
+    }
+
+    df_data = df[display_cols].copy()
+    df_total = pd.DataFrame([totals])
+
+    st.dataframe(
+        df_data,
+        use_container_width=True,
+        hide_index=True,
+        height=min(400, len(df_data) * 35 + 38)
+    )
+
+    st.dataframe(
+        df_total,
+        use_container_width=True,
+        hide_index=True,
+        column_config={col: st.column_config.Column(width="medium") for col in display_cols}
+    )
+
+
 def export_to_excel(data: list, filename: str = "导出数据.xlsx") -> bytes:
     """导出数据到Excel"""
-    from config import get_org_type
+    from config import get_org_type, get_status_display
 
     export_data = []
     for r in data:
+        status_text = get_status_display(r.get('status', '')).replace('🟡 ', '').replace('🔵 ', '').replace('🟢 ', '')
+
         export_data.append({
             '事项': r.get('title', ''),
+            '内容概要': r.get('description', ''),
             '研究范畴': r.get('research_scope', ''),
             '需求类型': r.get('request_type', ''),
-            '承接研究员': r.get('researcher_name', ''),
             '客户名': r.get('org_name', ''),
             '客户类型': r.get('org_type') or get_org_type(r.get('org_name', '')),
             '对应销售': r.get('sales_name', ''),
+            '承接研究员': r.get('researcher_name', ''),
             '工时消耗（H）': r.get('work_hours', 0),
+            '状态': status_text,
+            '是否保密': '是' if r.get('is_confidential') else '否',
+            '创建时间': r.get('created_at', ''),
+            '完成时间': r.get('completed_at', ''),
+            '处理结果': r.get('result_note', ''),
         })
 
     df = pd.DataFrame(export_data)

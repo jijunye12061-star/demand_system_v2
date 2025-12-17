@@ -5,15 +5,15 @@ from core.database import get_connection
 
 
 def create_request(
-    title: str,
-    description: str,
-    request_type: str,
-    research_scope: str,
-    org_name: str,
-    org_type: str,
-    sales_id: int,
-    researcher_id: int,
-    is_confidential: bool = False
+        title: str,
+        description: str,
+        request_type: str,
+        research_scope: str,
+        org_name: str,
+        org_type: str,
+        sales_id: int,
+        researcher_id: int,
+        is_confidential: bool = False
 ) -> int:
     """创建新需求"""
     with get_connection() as conn:
@@ -72,19 +72,17 @@ def get_visible_requests_for_user(user: dict) -> list:
     """
     with get_connection() as conn:
         cursor = conn.cursor()
-        
+
         if user['role'] == 'admin':
-            # 管理员看全部
             cursor.execute(_build_request_query())
         else:
-            # 销售或研究员：公开的 + 自己相关的保密需求
             query = _build_request_query('''
                 (r.is_confidential = 0 
                  OR r.sales_id = ? 
                  OR r.researcher_id = ?)
             ''')
             cursor.execute(query, (user['id'], user['id']))
-        
+
         return [dict(row) for row in cursor.fetchall()]
 
 
@@ -148,8 +146,20 @@ def reassign_researcher(request_id: int, new_researcher_id: int):
         conn.commit()
 
 
-def get_researcher_pending_count(researcher_id: int) -> int:
-    """获取研究员当日待完成数量"""
+def toggle_confidential(request_id: int, is_confidential: bool):
+    """切换需求的保密状态（管理员用）"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE requests 
+            SET is_confidential = ?, updated_at = ?
+            WHERE id = ?
+        ''', (1 if is_confidential else 0, datetime.now(), request_id))
+        conn.commit()
+
+
+def get_researcher_today_pending_count(researcher_id: int) -> int:
+    """获取研究员今日待完成数量（待处理+处理中）"""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute('''
@@ -168,3 +178,14 @@ def can_user_view_request(user: dict, request: dict) -> bool:
     if not request['is_confidential']:
         return True
     return user['id'] in (request['sales_id'], request['researcher_id'])
+
+
+def check_researcher_workload(researcher_id: int) -> tuple[bool, int]:
+    """
+    检查研究员当日工作量
+    返回: (是否超载, 待完成数量)
+    超载定义：当日待完成工作 >= 5项
+    """
+    count = get_researcher_today_pending_count(researcher_id)
+    is_overloaded = count >= 5
+    return is_overloaded, count

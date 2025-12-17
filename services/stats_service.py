@@ -1,4 +1,4 @@
-# services/stats_service.py - 统计相关业务逻辑
+# services/stats_service.py - 统计相关业务逻辑（增强版）
 
 from datetime import datetime, timedelta
 from core.database import get_connection
@@ -337,3 +337,165 @@ def get_user_stats(user_id: int, role: str) -> dict:
 
         row = cursor.fetchone()
         return dict(row) if row else {'total': 0, 'pending': 0, 'in_progress': 0, 'completed': 0}
+
+
+# ============================================================
+# 新增：多时间维度统计
+# ============================================================
+
+def get_multi_period_stats_by_researcher() -> list:
+    """获取按研究员的多时间维度统计（今日/本周/本月/当季/今年）"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+
+        now = datetime.now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = today_start - timedelta(days=now.weekday())
+        month_start = today_start.replace(day=1)
+
+        # 当季开始
+        quarter = (now.month - 1) // 3
+        quarter_start = today_start.replace(month=quarter * 3 + 1, day=1)
+
+        # 今年开始
+        year_start = today_start.replace(month=1, day=1)
+
+        cursor.execute('''
+            SELECT 
+                u.id,
+                u.display_name as researcher_name,
+
+                -- 今日
+                SUM(CASE WHEN r.created_at >= ? THEN 1 ELSE 0 END) as today_count,
+                COALESCE(SUM(CASE WHEN r.created_at >= ? AND r.status = 'completed' THEN r.work_hours ELSE 0 END), 0) as today_hours,
+
+                -- 本周
+                SUM(CASE WHEN r.created_at >= ? THEN 1 ELSE 0 END) as week_count,
+                COALESCE(SUM(CASE WHEN r.created_at >= ? AND r.status = 'completed' THEN r.work_hours ELSE 0 END), 0) as week_hours,
+
+                -- 当月
+                SUM(CASE WHEN r.created_at >= ? THEN 1 ELSE 0 END) as month_count,
+                COALESCE(SUM(CASE WHEN r.created_at >= ? AND r.status = 'completed' THEN r.work_hours ELSE 0 END), 0) as month_hours,
+
+                -- 当季
+                SUM(CASE WHEN r.created_at >= ? THEN 1 ELSE 0 END) as quarter_count,
+                COALESCE(SUM(CASE WHEN r.created_at >= ? AND r.status = 'completed' THEN r.work_hours ELSE 0 END), 0) as quarter_hours,
+
+                -- 今年以来
+                SUM(CASE WHEN r.created_at >= ? THEN 1 ELSE 0 END) as year_count,
+                COALESCE(SUM(CASE WHEN r.created_at >= ? AND r.status = 'completed' THEN r.work_hours ELSE 0 END), 0) as year_hours
+
+            FROM users u
+            LEFT JOIN requests r ON r.researcher_id = u.id
+            WHERE u.role = 'researcher'
+            GROUP BY u.id
+            ORDER BY year_hours DESC
+        ''', (today_start, today_start, week_start, week_start, month_start, month_start,
+              quarter_start, quarter_start, year_start, year_start))
+
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_multi_period_stats_by_request_type() -> list:
+    """获取按需求类型的多时间维度统计（今日/本周/本月/当季/今年）"""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+
+        now = datetime.now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = today_start - timedelta(days=now.weekday())
+        month_start = today_start.replace(day=1)
+
+        # 当季开始
+        quarter = (now.month - 1) // 3
+        quarter_start = today_start.replace(month=quarter * 3 + 1, day=1)
+
+        # 今年开始
+        year_start = today_start.replace(month=1, day=1)
+
+        cursor.execute('''
+            SELECT 
+                request_type,
+
+                -- 今日
+                SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as today_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND status = 'completed' THEN work_hours ELSE 0 END), 0) as today_hours,
+
+                -- 本周
+                SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as week_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND status = 'completed' THEN work_hours ELSE 0 END), 0) as week_hours,
+
+                -- 当月
+                SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as month_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND status = 'completed' THEN work_hours ELSE 0 END), 0) as month_hours,
+
+                -- 当季
+                SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as quarter_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND status = 'completed' THEN work_hours ELSE 0 END), 0) as quarter_hours,
+
+                -- 今年以来
+                SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as year_count,
+                COALESCE(SUM(CASE WHEN created_at >= ? AND status = 'completed' THEN work_hours ELSE 0 END), 0) as year_hours
+
+            FROM requests
+            GROUP BY request_type
+            ORDER BY year_hours DESC
+        ''', (today_start, today_start, week_start, week_start, month_start, month_start,
+              quarter_start, quarter_start, year_start, year_start))
+
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_filtered_requests_for_export(
+        start_date=None,
+        end_date=None,
+        request_type=None,
+        researcher_id=None,
+        org_name=None,
+        status=None
+) -> list:
+    """
+    获取筛选后的需求列表（用于导出）
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+
+        # 构建WHERE子句
+        where_clauses = []
+        params = []
+
+        if start_date and end_date:
+            where_clauses.append("r.created_at >= ? AND r.created_at <= ?")
+            params.extend([start_date, end_date])
+
+        if request_type:
+            where_clauses.append("r.request_type = ?")
+            params.append(request_type)
+
+        if researcher_id:
+            where_clauses.append("r.researcher_id = ?")
+            params.append(researcher_id)
+
+        if org_name:
+            where_clauses.append("r.org_name = ?")
+            params.append(org_name)
+
+        if status:
+            where_clauses.append("r.status = ?")
+            params.append(status)
+
+        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+        query = f'''
+            SELECT r.*, 
+                   s.display_name as sales_name,
+                   res.display_name as researcher_name
+            FROM requests r
+            JOIN users s ON r.sales_id = s.id
+            JOIN users res ON r.researcher_id = res.id
+            WHERE {where_sql}
+            ORDER BY r.created_at DESC
+        '''
+
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
